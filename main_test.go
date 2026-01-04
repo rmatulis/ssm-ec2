@@ -328,10 +328,10 @@ func TestInstanceIDFormats(t *testing.T) {
 		valid bool
 	}{
 		{"Valid long instance ID", "i-0123456789abcdef0", true},
-		{"Valid short instance ID 1", "i-abcdef0123456789", true},
-		{"Valid short instance ID 2", "i-1234567890abcdef", true},
+		{"Valid short instance ID 1", "i-12345678", true},
+		{"Valid short instance ID 2", "i-abcdef01", true},
 		{"Invalid prefix", "e-0123456789abcdef0", false},
-		{"Too short", "i-abcdef012345", false},
+		{"Too short", "i-abcdef", false},
 		{"Too long", "i-0123456789abcdef01234", false},
 		{"Missing prefix", "0123456789abcdef0", false},
 		{"Empty ID", "", false},
@@ -339,9 +339,11 @@ func TestInstanceIDFormats(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Validate instance ID format: i- prefix and 17 or 19 characters total
+			// Validate instance ID format: i- prefix and 10 or 19 characters total
+			// Old format: i- + 8 hex chars = 10 chars
+			// New format: i- + 17 hex chars = 19 chars
 			hasValidPrefix := strings.HasPrefix(tt.id, "i-")
-			isValidLength := len(tt.id) == 18 || len(tt.id) == 19
+			isValidLength := len(tt.id) == 10 || len(tt.id) == 19
 			isValid := hasValidPrefix && isValidLength
 
 			if isValid != tt.valid {
