@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 // Version information (set by build flags)
@@ -38,6 +40,7 @@ type Instance struct {
 	PublicIP     string
 	State        string
 	InstanceType string
+	Platform     string
 }
 
 type RDSInstance struct {
@@ -55,7 +58,24 @@ type SessionData struct {
 	TokenValue string `json:"TokenValue"`
 }
 
+// Config represents the configuration file structure
+type Config struct {
+	Linux   ShellConfig `yaml:"linux"`
+	Windows ShellConfig `yaml:"windows"`
+}
+
+// ShellConfig represents shell configuration for a platform
+type ShellConfig struct {
+	Shell string `yaml:"shell"`
+}
+
+// Global configuration
+var appConfig Config
+
 func main() {
+	// Load configuration
+	loadConfig()
+
 	rootCmd := &cobra.Command{
 		Use:   "aws-go-tools",
 		Short: "AWS tools for EC2 SSM connections and RDS IAM authentication",
@@ -106,6 +126,36 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func loadConfig() {
+	// Set default configuration
+	appConfig = Config{
+		Linux: ShellConfig{
+			Shell: "/bin/bash",
+		},
+		Windows: ShellConfig{
+			Shell: "powershell.exe",
+		},
+	}
+
+	// Try to load config from file
+	configPaths := []string{
+		"config.yaml",
+		filepath.Join(os.Getenv("HOME"), ".aws-go-tools", "config.yaml"),
+		"/etc/aws-go-tools/config.yaml",
+	}
+
+	for _, configPath := range configPaths {
+		if data, err := os.ReadFile(configPath); err == nil {
+			if err := yaml.Unmarshal(data, &appConfig); err == nil {
+				fmt.Printf("Loaded configuration from: %s\n", configPath)
+				return
+			}
+		}
+	}
+
+	// Using default configuration if no file found
 }
 
 func loadAWSConfig(ctx context.Context) aws.Config {
@@ -207,6 +257,22 @@ func listInstances(ctx context.Context, cfg aws.Config) ([]Instance, error) {
 				State:        string(instance.State.Name),
 			}
 
+			// Determine platform (defaults to Linux if not specified)
+			inst.Platform = "linux"
+			if instance.Platform != "" {
+				platform := strings.ToLower(string(instance.Platform))
+				if platform == "windows" {
+					inst.Platform = "windows"
+				}
+			}
+			// Also check PlatformDetails for more accurate detection
+			if instance.PlatformDetails != nil {
+				platformDetails := strings.ToLower(aws.ToString(instance.PlatformDetails))
+				if strings.Contains(platformDetails, "windows") {
+					inst.Platform = "windows"
+				}
+			}
+
 			// Get instance name from tags
 			for _, tag := range instance.Tags {
 				if aws.ToString(tag.Key) == "Name" {
@@ -264,8 +330,8 @@ func selectInstance(instances []Instance) (Instance, error) {
 
 	var selected string
 	prompt := &survey.Select{
-		Message: "Select an EC2 instance to connect:",
-		Options: options,
+		Message:  "Select an EC2 instance to connect:",
+		Options:  options,
 		PageSize: 10,
 	}
 
@@ -297,11 +363,23 @@ func connectToInstance(ctx context.Context, cfg aws.Config, instance Instance) e
 
 	ssmClient := ssm.NewFromConfig(cfg)
 
+	// Determine which shell to use based on platform
+	var shellCommand string
+	if instance.Platform == "windows" {
+		shellCommand = appConfig.Windows.Shell
+	} else {
+		shellCommand = appConfig.Linux.Shell
+	}
+
 	// Start SSM session
-	fmt.Printf("\nStarting SSM session to %s (%s)...\n", instance.Name, instance.ID)
+	fmt.Printf("\nStarting SSM session to %s (%s) with %s shell...\n", instance.Name, instance.ID, shellCommand)
 
 	startSessionInput := &ssm.StartSessionInput{
-		Target: aws.String(instance.ID),
+		Target:       aws.String(instance.ID),
+		DocumentName: aws.String("AWS-StartInteractiveCommand"),
+		Parameters: map[string][]string{
+			"command": {shellCommand},
+		},
 	}
 
 	result, err := ssmClient.StartSession(ctx, startSessionInput)
@@ -426,8 +504,8 @@ func selectRDSInstance(instances []RDSInstance) (RDSInstance, error) {
 
 	var selected string
 	prompt := &survey.Select{
-		Message: "Select an RDS instance:",
-		Options: options,
+		Message:  "Select an RDS instance:",
+		Options:  options,
 		PageSize: 10,
 	}
 

@@ -1,0 +1,15 @@
+# AWS Go Tools Configuration
+# This file allows you to configure shell preferences for different server types
+
+# Shell configuration for Linux instances
+linux:
+  shell: /bin/bash
+  # Alternative shells:
+  # shell: /bin/sh
+  # shell: /bin/zsh
+
+  # Shell configuration for Windows instances
+windows:
+  shell: powershell.exe
+  # Alternative shells:
+  # shell: cmd.exe
