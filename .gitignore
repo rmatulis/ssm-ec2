@@ -1,32 +1,39 @@
-# Binaries for programs and plugins
+# Binaries
+ec2-ssm-connector
+ec2-ssm-connector-*
+aws-go-tools
+aws-go-tools-*
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
 
-# Test binary, built with `go test -c`
+# Build artifacts
+binaries/
+build/
+dist/
+
+# Test binary
 *.test
 
-# Output of the go coverage tool, specifically when used with LiteIDE
+# Output of the go coverage tool
 *.out
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
+# Dependency directories
+vendor/
 
 # Go workspace file
 go.work
 
-# Build output
-ssm-ec2
-
-# IDE specific files
-.idea/
+# IDE
 .vscode/
+.idea/
 *.swp
 *.swo
 *~
 
-# OS specific files
+# OS
 .DS_Store
 Thumbs.db
+config.yaml
