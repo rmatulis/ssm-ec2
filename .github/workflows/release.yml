@@ -61,19 +61,19 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
-            output: ec2-ssm-connector-linux-amd64
+            output: aws-go-tools-linux-amd64
           - goos: linux
             goarch: arm64
-            output: ec2-ssm-connector-linux-arm64
+            output: aws-go-tools-linux-arm64
           - goos: darwin
             goarch: amd64
-            output: ec2-ssm-connector-darwin-amd64
+            output: aws-go-tools-darwin-amd64
           - goos: darwin
             goarch: arm64
-            output: ec2-ssm-connector-darwin-arm64
+            output: aws-go-tools-darwin-arm64
           - goos: windows
             goarch: amd64
-            output: ec2-ssm-connector-windows-amd64.exe
+            output: aws-go-tools-windows-amd64.exe
     steps:
       - name: Checkout code
         uses: actions/checkout@v4

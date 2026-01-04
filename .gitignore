@@ -1,6 +1,8 @@
 # Binaries
 ec2-ssm-connector
 ec2-ssm-connector-*
+aws-go-tools
+aws-go-tools-*
 *.exe
 *.exe~
 *.dll

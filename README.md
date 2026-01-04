@@ -1,6 +1,6 @@
-# AWS EC2 SSM Connector & RDS IAM Auth Token Generator
+# AWS Go Tools
 
-A Go tool to list EC2 instances and connect to them via AWS Systems Manager (SSM) Session Manager, or generate IAM authentication tokens for RDS database connections.
+A command-line tool to manage AWS resources including EC2 instances via Systems Manager (SSM) Session Manager and RDS IAM authentication tokens.
 
 ## Features
 
@@ -11,6 +11,8 @@ A Go tool to list EC2 instances and connect to them via AWS Systems Manager (SSM
 - 🗄️ List RDS database instances
 - 🔑 Generate IAM authentication tokens for RDS databases
 - 🔐 Support for AWS profiles and regions
+- ⚡ Built with Cobra CLI framework and Survey for interactive prompts
+- ✅ Comprehensive test coverage
 
 ## Prerequisites
 
@@ -46,22 +48,22 @@ Download the latest release for your platform from the [Releases page](https://g
 
 ```bash
 # Linux AMD64
-wget https://github.com/rmatulis/aws-go-tools/releases/latest/download/ec2-ssm-connector-linux-amd64
-chmod +x ec2-ssm-connector-linux-amd64
-sudo mv ec2-ssm-connector-linux-amd64 /usr/local/bin/ec2-ssm-connector
+wget https://github.com/rmatulis/aws-go-tools/releases/latest/download/aws-go-tools-linux-amd64
+chmod +x aws-go-tools-linux-amd64
+sudo mv aws-go-tools-linux-amd64 /usr/local/bin/aws-go-tools
 
 # macOS ARM64 (Apple Silicon)
-wget https://github.com/rmatulis/aws-go-tools/releases/latest/download/ec2-ssm-connector-darwin-arm64
-chmod +x ec2-ssm-connector-darwin-arm64
-sudo mv ec2-ssm-connector-darwin-arm64 /usr/local/bin/ec2-ssm-connector
+wget https://github.com/rmatulis/aws-go-tools/releases/latest/download/aws-go-tools-darwin-arm64
+chmod +x aws-go-tools-darwin-arm64
+sudo mv aws-go-tools-darwin-arm64 /usr/local/bin/aws-go-tools
 
 # macOS AMD64 (Intel)
-wget https://github.com/rmatulis/aws-go-tools/releases/latest/download/ec2-ssm-connector-darwin-amd64
-chmod +x ec2-ssm-connector-darwin-amd64
-sudo mv ec2-ssm-connector-darwin-amd64 /usr/local/bin/ec2-ssm-connector
+wget https://github.com/rmatulis/aws-go-tools/releases/latest/download/aws-go-tools-darwin-amd64
+chmod +x aws-go-tools-darwin-amd64
+sudo mv aws-go-tools-darwin-amd64 /usr/local/bin/aws-go-tools
 
 # Windows (PowerShell)
-Invoke-WebRequest -Uri "https://github.com/rmatulis/aws-go-tools/releases/latest/download/ec2-ssm-connector-windows-amd64.exe" -OutFile "ec2-ssm-connector.exe"
+Invoke-WebRequest -Uri "https://github.com/rmatulis/aws-go-tools/releases/latest/download/aws-go-tools-windows-amd64.exe" -OutFile "aws-go-tools.exe"
 ```
 
 ### Option 2: Build from source
@@ -78,7 +80,7 @@ go mod download
 make build
 
 # Or build manually
-go build -o ec2-ssm-connector
+go build -o aws-go-tools
 
 # (Optional) Install to your PATH
 make install
@@ -89,13 +91,13 @@ go install
 ### Option 3: Run directly
 
 ```bash
-go run main.go --profile your-profile
+go run main.go ec2 --profile your-profile
 ```
 
 ### Check Version
 
 ```bash
-./ec2-ssm-connector --version
+./aws-go-tools version
 ```
 
 ## Development
@@ -136,45 +138,58 @@ go tool cover -html=coverage.out
 
 ## Usage
 
-### Interactive Mode (Default)
+### View Available Commands
 
 ```bash
-# Run without mode flag to get interactive menu
-./ec2-ssm-connector
+# Show all available commands
+./aws-go-tools --help
 
-# With AWS profile
-./ec2-ssm-connector --profile production
+# Show help for a specific command
+./aws-go-tools ec2 --help
+./aws-go-tools rds --help
 ```
 
 ### EC2 SSM Connection Mode
 
 ```bash
-# Direct mode selection
-./ec2-ssm-connector --mode ec2
+# Connect to EC2 instance via SSM
+./aws-go-tools ec2
 
 # With profile and region
-./ec2-ssm-connector --mode ec2 --profile production --region us-west-2
+./aws-go-tools ec2 --profile production --region us-west-2
+
+# Or use short flags
+./aws-go-tools ec2 -p production -r us-west-2
 ```
 
 ### RDS IAM Auth Token Mode
 
 ```bash
 # Generate RDS authentication token
-./ec2-ssm-connector --mode rds
+./aws-go-tools rds
 
 # With profile and region
-./ec2-ssm-connector --mode rds --profile production --region us-east-1
+./aws-go-tools rds --profile production --region us-east-1
+
+# Or use short flags
+./aws-go-tools rds -p production -r us-east-1
 ```
 
 ### Command Line Options
 
-| Flag | Description | Required | Default |
-|------|-------------|----------|---------|
-| `--profile` | AWS profile name from ~/.aws/credentials | No | Default profile |
-| `--region` | AWS region | No | Default region from profile |
-| `--mode` | Operation mode: 'ec2' or 'rds' | No | Interactive selection |
+| Flag | Short | Description | Required | Default |
+|------|-------|-------------|----------|---------|  
+| `--profile` | `-p` | AWS profile name from ~/.aws/credentials | No | Default profile |
+| `--region` | `-r` | AWS region | No | Default region from profile |
 
-## How It Works
+### Available Commands
+
+| Command | Description |
+|---------|-------------|
+| `ec2` | Connect to EC2 instance via SSM |
+| `rds` | Generate RDS IAM authentication token |
+| `version` | Print version information |
+| `help` | Help about any command |
 
 ### EC2 SSM Connection Flow
 
@@ -194,12 +209,26 @@ go tool cover -html=coverage.out
 
 ## Example Output
 
-### Mode Selection
+### Command Help
 
 ```
-? Select operation mode:
-▸ Connect to EC2 instance via SSM
-  Generate RDS IAM auth token
+$ ./aws-go-tools --help
+A CLI tool to connect to EC2 instances via SSM and generate RDS IAM authentication tokens.
+
+Usage:
+  aws-go-tools [command]
+
+Available Commands:
+  completion  Generate the autocompletion script for the specified shell
+  ec2         Connect to EC2 instance via SSM
+  help        Help about any command
+  rds         Generate RDS IAM authentication token
+  version     Print version information
+
+Flags:
+  -h, --help             help for aws-go-tools
+  -p, --profile string   AWS profile to use
+  -r, --region string    AWS region (optional, uses default region if not specified)
 ```
 
 ### EC2 SSM Connection

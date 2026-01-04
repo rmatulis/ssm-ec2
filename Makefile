@@ -1,7 +1,7 @@
 .PHONY: build clean install test fmt lint help
 
 VERSION ?= dev
-BINARY_NAME = ec2-ssm-connector
+BINARY_NAME = aws-go-tools
 BUILD_DIR = build
 
 help: ## Show this help message
@@ -56,13 +56,13 @@ deps: ## Download dependencies
 
 version: ## Show current version
 	@if [ -f $(BINARY_NAME) ]; then \
-		./$(BINARY_NAME) --version; \
+		./$(BINARY_NAME) version; \
 	else \
 		echo "Binary not built. Run 'make build' first."; \
 	fi
 
 run-ec2: ## Run in EC2 mode (requires AWS_PROFILE env var)
-	go run main.go --mode ec2 --profile $(AWS_PROFILE)
+	go run main.go ec2 --profile $(AWS_PROFILE)
 
 run-rds: ## Run in RDS mode (requires AWS_PROFILE env var)
-	go run main.go --mode rds --profile $(AWS_PROFILE)
+	go run main.go rds --profile $(AWS_PROFILE)

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -12,6 +11,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/AlecAivazis/survey/v2"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/feature/rds/auth"
@@ -19,11 +19,17 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
-	"github.com/manifoldco/promptui"
+	"github.com/spf13/cobra"
 )
 
 // Version information (set by build flags)
 var Version = "dev"
+
+// Global flags
+var (
+	profile string
+	region  string
+)
 
 type Instance struct {
 	ID           string
@@ -50,85 +56,75 @@ type SessionData struct {
 }
 
 func main() {
-	profile := flag.String("profile", "", "AWS profile to use")
-	region := flag.String("region", "", "AWS region (optional, uses default region if not specified)")
-	mode := flag.String("mode", "", "Mode: 'ec2' for SSM connection or 'rds' for IAM auth token")
-	version := flag.Bool("version", false, "Print version information")
-	flag.Parse()
-
-	if *version {
-		fmt.Printf("ec2-ssm-connector version %s\n", Version)
-		return
+	rootCmd := &cobra.Command{
+		Use:   "aws-go-tools",
+		Short: "AWS tools for EC2 SSM connections and RDS IAM authentication",
+		Long:  `A CLI tool to connect to EC2 instances via SSM and generate RDS IAM authentication tokens.`,
 	}
 
-	ctx := context.Background()
+	// Version command
+	versionCmd := &cobra.Command{
+		Use:   "version",
+		Short: "Print version information",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("aws-go-tools version %s\n", Version)
+		},
+	}
 
-	// Load AWS configuration
-	var cfg aws.Config
-	var err error
+	// EC2 command
+	ec2Cmd := &cobra.Command{
+		Use:   "ec2",
+		Short: "Connect to EC2 instance via SSM",
+		Long:  `List EC2 instances and connect to the selected instance using AWS Systems Manager Session Manager.`,
+		Run: func(cmd *cobra.Command, args []string) {
+			ctx := context.Background()
+			cfg := loadAWSConfig(ctx)
+			handleEC2Mode(ctx, cfg)
+		},
+	}
 
+	// RDS command
+	rdsCmd := &cobra.Command{
+		Use:   "rds",
+		Short: "Generate RDS IAM authentication token",
+		Long:  `List RDS instances and generate an IAM authentication token for the selected instance.`,
+		Run: func(cmd *cobra.Command, args []string) {
+			ctx := context.Background()
+			cfg := loadAWSConfig(ctx)
+			handleRDSMode(ctx, cfg)
+		},
+	}
+
+	// Add persistent flags
+	rootCmd.PersistentFlags().StringVarP(&profile, "profile", "p", "", "AWS profile to use")
+	rootCmd.PersistentFlags().StringVarP(&region, "region", "r", "", "AWS region (optional, uses default region if not specified)")
+
+	// Add commands
+	rootCmd.AddCommand(versionCmd, ec2Cmd, rdsCmd)
+
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func loadAWSConfig(ctx context.Context) aws.Config {
 	configOptions := []func(*config.LoadOptions) error{}
 
-	if *profile != "" {
-		configOptions = append(configOptions, config.WithSharedConfigProfile(*profile))
+	if profile != "" {
+		configOptions = append(configOptions, config.WithSharedConfigProfile(profile))
 	}
 
-	if *region != "" {
-		configOptions = append(configOptions, config.WithRegion(*region))
+	if region != "" {
+		configOptions = append(configOptions, config.WithRegion(region))
 	}
 
-	cfg, err = config.LoadDefaultConfig(ctx, configOptions...)
+	cfg, err := config.LoadDefaultConfig(ctx, configOptions...)
 	if err != nil {
 		log.Fatalf("Failed to load AWS config: %v", err)
 	}
 
-	// Determine mode if not specified
-	selectedMode := *mode
-	if selectedMode == "" {
-		selectedMode, err = selectMode()
-		if err != nil {
-			log.Fatalf("Failed to select mode: %v", err)
-		}
-	}
-
-	switch selectedMode {
-	case "ec2":
-		handleEC2Mode(ctx, cfg)
-	case "rds":
-		handleRDSMode(ctx, cfg)
-	default:
-		log.Fatalf("Invalid mode: %s. Use 'ec2' or 'rds'", selectedMode)
-	}
-}
-
-func selectMode() (string, error) {
-	modes := []struct {
-		Name        string
-		Description string
-	}{
-		{Name: "ec2", Description: "Connect to EC2 instance via SSM"},
-		{Name: "rds", Description: "Generate RDS IAM auth token"},
-	}
-
-	templates := &promptui.SelectTemplates{
-		Label:    "{{ . }}",
-		Active:   "▸ {{ .Description | cyan }}",
-		Inactive: "  {{ .Description }}",
-		Selected: "✔ Selected: {{ .Description | cyan }}",
-	}
-
-	prompt := promptui.Select{
-		Label:     "Select operation mode",
-		Items:     modes,
-		Templates: templates,
-	}
-
-	index, _, err := prompt.Run()
-	if err != nil {
-		return "", err
-	}
-
-	return modes[index].Name, nil
+	return cfg
 }
 
 func handleEC2Mode(ctx context.Context, cfg aws.Config) {
@@ -142,9 +138,6 @@ func handleEC2Mode(ctx context.Context, cfg aws.Config) {
 		fmt.Println("No EC2 instances found")
 		return
 	}
-
-	// Display instances
-	displayInstances(instances)
 
 	// Prompt user to select an instance
 	selectedInstance, err := selectInstance(instances)
@@ -170,9 +163,6 @@ func handleRDSMode(ctx context.Context, cfg aws.Config) {
 		fmt.Println("No RDS instances found")
 		return
 	}
-
-	// Display RDS instances
-	displayRDSInstances(rdsInstances)
 
 	// Prompt user to select an RDS instance
 	selectedRDS, err := selectRDSInstance(rdsInstances)
@@ -245,11 +235,11 @@ func displayInstances(instances []Instance) {
 	fmt.Println(strings.Repeat("=", 120))
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "INDEX\tINSTANCE ID\tNAME\tSTATE\tTYPE\tPRIVATE IP\tPUBLIC IP")
-	fmt.Fprintln(w, strings.Repeat("-", 5)+"\t"+strings.Repeat("-", 19)+"\t"+strings.Repeat("-", 30)+"\t"+
+	fmt.Fprintln(w, "INSTANCE ID\tNAME\tSTATE\tTYPE\tPRIVATE IP\tPUBLIC IP")
+	fmt.Fprintln(w, strings.Repeat("-", 19)+"\t"+strings.Repeat("-", 30)+"\t"+
 		strings.Repeat("-", 10)+"\t"+strings.Repeat("-", 12)+"\t"+strings.Repeat("-", 15)+"\t"+strings.Repeat("-", 15))
 
-	for i, inst := range instances {
+	for _, inst := range instances {
 		name := inst.Name
 		if name == "" {
 			name = "-"
@@ -259,34 +249,39 @@ func displayInstances(instances []Instance) {
 			publicIP = "-"
 		}
 
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			i+1, inst.ID, name, inst.State, inst.InstanceType, inst.PrivateIP, publicIP)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			inst.ID, name, inst.State, inst.InstanceType, inst.PrivateIP, publicIP)
 	}
 	w.Flush()
 	fmt.Println(strings.Repeat("=", 120))
 }
 
 func selectInstance(instances []Instance) (Instance, error) {
-	templates := &promptui.SelectTemplates{
-		Label:    "{{ . }}",
-		Active:   "▸ {{ .Name | cyan }} ({{ .ID | yellow }}) - {{ .State | green }}",
-		Inactive: "  {{ .Name }} ({{ .ID }}) - {{ .State }}",
-		Selected: "✔ Selected: {{ .Name | cyan }} ({{ .ID | yellow }})",
+	var options []string
+	for _, inst := range instances {
+		options = append(options, fmt.Sprintf("%s (%s) - %s", inst.Name, inst.ID, inst.State))
 	}
 
-	prompt := promptui.Select{
-		Label:     "Select an EC2 instance to connect",
-		Items:     instances,
-		Templates: templates,
-		Size:      10,
+	var selected string
+	prompt := &survey.Select{
+		Message: "Select an EC2 instance to connect:",
+		Options: options,
+		PageSize: 10,
 	}
 
-	index, _, err := prompt.Run()
+	err := survey.AskOne(prompt, &selected)
 	if err != nil {
 		return Instance{}, err
 	}
 
-	return instances[index], nil
+	// Find the selected instance by matching the formatted string
+	for i, opt := range options {
+		if opt == selected {
+			return instances[i], nil
+		}
+	}
+
+	return Instance{}, fmt.Errorf("selected instance not found")
 }
 
 func connectToInstance(ctx context.Context, cfg aws.Config, instance Instance) error {
@@ -402,11 +397,11 @@ func displayRDSInstances(instances []RDSInstance) {
 	fmt.Println(strings.Repeat("=", 120))
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "INDEX\tIDENTIFIER\tENGINE\tSTATUS\tENDPOINT\tPORT")
-	fmt.Fprintln(w, strings.Repeat("-", 5)+"\t"+strings.Repeat("-", 40)+"\t"+
+	fmt.Fprintln(w, "IDENTIFIER\tENGINE\tSTATUS\tENDPOINT\tPORT")
+	fmt.Fprintln(w, strings.Repeat("-", 40)+"\t"+
 		strings.Repeat("-", 15)+"\t"+strings.Repeat("-", 15)+"\t"+strings.Repeat("-", 50)+"\t"+strings.Repeat("-", 6))
 
-	for i, inst := range instances {
+	for _, inst := range instances {
 		endpoint := inst.Endpoint
 		if endpoint == "" {
 			endpoint = "-"
@@ -416,50 +411,48 @@ func displayRDSInstances(instances []RDSInstance) {
 			port = "-"
 		}
 
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\n",
-			i+1, inst.Identifier, inst.Engine, inst.Status, endpoint, port)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+			inst.Identifier, inst.Engine, inst.Status, endpoint, port)
 	}
 	w.Flush()
 	fmt.Println(strings.Repeat("=", 120))
 }
 
 func selectRDSInstance(instances []RDSInstance) (RDSInstance, error) {
-	templates := &promptui.SelectTemplates{
-		Label:    "{{ . }}",
-		Active:   "▸ {{ .Identifier | cyan }} ({{ .Engine | yellow }}) - {{ .Status | green }}",
-		Inactive: "  {{ .Identifier }} ({{ .Engine }}) - {{ .Status }}",
-		Selected: "✔ Selected: {{ .Identifier | cyan }} ({{ .Engine | yellow }})",
+	var options []string
+	for _, inst := range instances {
+		options = append(options, fmt.Sprintf("%s (%s) - %s", inst.Identifier, inst.Engine, inst.Status))
 	}
 
-	prompt := promptui.Select{
-		Label:     "Select an RDS instance",
-		Items:     instances,
-		Templates: templates,
-		Size:      10,
+	var selected string
+	prompt := &survey.Select{
+		Message: "Select an RDS instance:",
+		Options: options,
+		PageSize: 10,
 	}
 
-	index, _, err := prompt.Run()
+	err := survey.AskOne(prompt, &selected)
 	if err != nil {
 		return RDSInstance{}, err
 	}
 
-	return instances[index], nil
+	// Find the selected instance by matching the formatted string
+	for i, opt := range options {
+		if opt == selected {
+			return instances[i], nil
+		}
+	}
+
+	return RDSInstance{}, fmt.Errorf("selected RDS instance not found")
 }
 
 func promptForUsername() (string, error) {
-	validate := func(input string) error {
-		if strings.TrimSpace(input) == "" {
-			return fmt.Errorf("username cannot be empty")
-		}
-		return nil
+	var username string
+	prompt := &survey.Input{
+		Message: "Enter database username:",
 	}
 
-	prompt := promptui.Prompt{
-		Label:    "Enter database username",
-		Validate: validate,
-	}
-
-	username, err := prompt.Run()
+	err := survey.AskOne(prompt, &username, survey.WithValidator(survey.Required))
 	if err != nil {
 		return "", err
 	}
