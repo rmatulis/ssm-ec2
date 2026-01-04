@@ -1,146 +1,380 @@
-# ssm-ec2
+# AWS EC2 SSM Connector & RDS IAM Auth Token Generator
 
-A command-line tool for connecting to AWS EC2 instances via AWS Systems Manager (SSM) Session Manager with an interactive instance selector.
+A Go tool to list EC2 instances and connect to them via AWS Systems Manager (SSM) Session Manager, or generate IAM authentication tokens for RDS database connections.
 
 ## Features
 
-- 🔍 **Interactive Instance Selection** - Browse and select from your SSM-managed EC2 instances using an interactive menu
-- 🏷️ **Rich Instance Information** - Displays instance ID, Name tag, computer name, and platform type
-- 🔒 **Secure Sessions** - Connects via SSM Session Manager (no SSH keys or open ports required)
-- 🌏 **Multi-Region Support** - Defaults to `ap-southeast-2` but supports any AWS region
-- 👤 **AWS Profile Support** - Use different AWS profiles for multi-account access
-- ✨ **User-Friendly** - Built with [Charm](https://github.com/charmbracelet/huh) for a modern CLI experience
+- 📋 List all EC2 instances in your AWS account
+- 🔍 Filter and display instance details (ID, Name, State, Type, IPs)
+- 🔗 Interactive instance selection with a user-friendly prompt
+- 🚀 Connect to EC2 instances via AWS SSM Session Manager
+- 🗄️ List RDS database instances
+- 🔑 Generate IAM authentication tokens for RDS databases
+- 🔐 Support for AWS profiles and regions
 
 ## Prerequisites
 
-1. **AWS Session Manager Plugin** - Required for establishing SSM sessions
-   ```bash
-   # macOS (using Homebrew)
-   brew install --cask session-manager-plugin
-   
-   # Or download from AWS
-   # https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html
-   ```
+### For EC2 SSM Connections
 
-2. **AWS Credentials** - Configure your AWS credentials and profiles
-   ```bash
-   aws configure
-   ```
+1. **AWS CLI configured** with appropriate credentials
+2. **Session Manager Plugin** installed - [Installation Guide](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
+3. **IAM Permissions** required:
+   - `ec2:DescribeInstances`
+   - `ssm:StartSession`
+   - `ssm:TerminateSession`
+4. **EC2 Instance Requirements**:
+   - Instance must have SSM Agent installed and running
+   - Instance must have an IAM role with `AmazonSSMManagedInstanceCore` policy attached
+   - Instance must be in "running" state
 
-3. **Go 1.21+** (for building from source)
+### For RDS IAM Auth Tokens
+
+1. **AWS CLI configured** with appropriate credentials
+2. **IAM Permissions** required:
+   - `rds:DescribeDBInstances`
+   - `rds-db:connect` (for the specific database resource)
+3. **RDS Database Requirements**:
+   - IAM database authentication must be enabled on the RDS instance
+   - Database user must be configured for IAM authentication
+   - SSL/TLS connection capability
 
 ## Installation
 
-### Build from Source
+### Option 1: Download pre-built binary (Recommended)
+
+Download the latest release for your platform from the [Releases page](https://github.com/rmatulis/aws-go-tools/releases):
 
 ```bash
-git clone https://github.com/rmatulis/ssm-ec2.git
-cd ssm-ec2
-go build -o ssm-ec2 main.go
+# Linux AMD64
+wget https://github.com/rmatulis/aws-go-tools/releases/latest/download/ec2-ssm-connector-linux-amd64
+chmod +x ec2-ssm-connector-linux-amd64
+sudo mv ec2-ssm-connector-linux-amd64 /usr/local/bin/ec2-ssm-connector
+
+# macOS ARM64 (Apple Silicon)
+wget https://github.com/rmatulis/aws-go-tools/releases/latest/download/ec2-ssm-connector-darwin-arm64
+chmod +x ec2-ssm-connector-darwin-arm64
+sudo mv ec2-ssm-connector-darwin-arm64 /usr/local/bin/ec2-ssm-connector
+
+# macOS AMD64 (Intel)
+wget https://github.com/rmatulis/aws-go-tools/releases/latest/download/ec2-ssm-connector-darwin-amd64
+chmod +x ec2-ssm-connector-darwin-amd64
+sudo mv ec2-ssm-connector-darwin-amd64 /usr/local/bin/ec2-ssm-connector
+
+# Windows (PowerShell)
+Invoke-WebRequest -Uri "https://github.com/rmatulis/aws-go-tools/releases/latest/download/ec2-ssm-connector-windows-amd64.exe" -OutFile "ec2-ssm-connector.exe"
 ```
 
-### Install to PATH (optional)
+### Option 2: Build from source
 
 ```bash
-# macOS/Linux
-sudo mv ssm-ec2 /usr/local/bin/
+# Clone the repository
+git clone https://github.com/rmatulis/aws-go-tools.git
+cd aws-go-tools
 
-# Or add to your home bin directory
-mv ssm-ec2 ~/bin/
+# Download dependencies
+go mod download
+
+# Build the binary (using Makefile - recommended)
+make build
+
+# Or build manually
+go build -o ec2-ssm-connector
+
+# (Optional) Install to your PATH
+make install
+# Or manually
+go install
+```
+
+### Option 3: Run directly
+
+```bash
+go run main.go --profile your-profile
+```
+
+### Check Version
+
+```bash
+./ec2-ssm-connector --version
+```
+
+## Development
+
+### Makefile Commands
+
+The project includes a Makefile for common development tasks:
+
+```bash
+make help        # Show all available commands
+make build       # Build the binary
+make build-all   # Build for all platforms
+make install     # Install to /usr/local/bin
+make clean       # Remove build artifacts
+make test        # Run tests
+make fmt         # Format code
+make version     # Show binary version
+```
+
+Build with custom version:
+```bash
+make build VERSION=v1.2.3
+```
+
+### Running Tests
+
+```bash
+# Run all tests
+go test -v ./...
+
+# Or use the Makefile
+make test
+
+# Run tests with coverage
+go test -v -race -coverprofile=coverage.out ./...
+go tool cover -html=coverage.out
 ```
 
 ## Usage
 
-### Basic Usage
+### Interactive Mode (Default)
 
 ```bash
-# Use default region (ap-southeast-2) and default profile
-./ssm-ec2
+# Run without mode flag to get interactive menu
+./ec2-ssm-connector
 
-# Specify a different region
-./ssm-ec2 -region us-east-1
-
-# Use a specific AWS profile
-./ssm-ec2 -profile production
-
-# Combine options
-./ssm-ec2 -region eu-west-1 -profile dev-account
+# With AWS profile
+./ec2-ssm-connector --profile production
 ```
 
-### Command-line Options
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-region` | `ap-southeast-2` | AWS region to target |
-| `-profile` | `default` | AWS profile to use |
-
-### Example Session
+### EC2 SSM Connection Mode
 
 ```bash
-$ ./ssm-ec2
-2025/11/05 10:30:15 Using profile: default, region: ap-southeast-2
+# Direct mode selection
+./ec2-ssm-connector --mode ec2
 
-Select an Instance to Connect
-> i-0123456789abcdef0 (web-server-01) - ip-10-0-1-100 [Linux]
-  i-0fedcba9876543210 (app-server-01) - ip-10-0-2-50 [Linux]
-  i-0abcdef1234567890 (win-server-01) - EC2AMAZ-12345 [Windows]
-
-2025/11/05 10:30:20 Starting SSM session for i-0123456789abcdef0...
-
-Starting session with SessionId: john.doe-0a1b2c3d4e5f6g7h8
-sh-4.2$ 
+# With profile and region
+./ec2-ssm-connector --mode ec2 --profile production --region us-west-2
 ```
+
+### RDS IAM Auth Token Mode
+
+```bash
+# Generate RDS authentication token
+./ec2-ssm-connector --mode rds
+
+# With profile and region
+./ec2-ssm-connector --mode rds --profile production --region us-east-1
+```
+
+### Command Line Options
+
+| Flag | Description | Required | Default |
+|------|-------------|----------|---------|
+| `--profile` | AWS profile name from ~/.aws/credentials | No | Default profile |
+| `--region` | AWS region | No | Default region from profile |
+| `--mode` | Operation mode: 'ec2' or 'rds' | No | Interactive selection |
 
 ## How It Works
 
-1. **Validates Prerequisites** - Checks for `session-manager-plugin` installation
-2. **Loads AWS Config** - Uses specified region and profile
-3. **Fetches SSM Instances** - Retrieves all online instances managed by SSM
-4. **Enriches with EC2 Tags** - Adds EC2 Name tags for better identification
-5. **Interactive Selection** - Presents a menu to choose your target instance
-6. **Establishes Session** - Starts SSM session and hands off to the plugin
+### EC2 SSM Connection Flow
 
-## Requirements for EC2 Instances
+1. **List Instances**: The tool queries EC2 to get all instances (excluding terminated ones)
+2. **Display Table**: Shows a formatted table with instance details
+3. **Interactive Selection**: Uses an interactive prompt to select an instance
+4. **SSM Connection**: Establishes an SSM session using the local session-manager-plugin
 
-For an instance to appear in the list, it must:
+### RDS IAM Auth Token Flow
 
-- Have the **SSM Agent** installed and running
-- Have an **IAM instance profile** with SSM permissions (e.g., `AmazonSSMManagedInstanceCore`)
-- Be in an **"Online"** ping status in SSM
-- Be in the specified AWS region
+1. **List RDS Instances**: The tool queries RDS to get all database instances
+2. **Display Table**: Shows a formatted table with RDS instance details
+3. **Interactive Selection**: Uses an interactive prompt to select a database
+4. **Username Input**: Prompts for the database username
+5. **Token Generation**: Generates a temporary IAM authentication token (valid for 15 minutes)
+6. **Display Token & Examples**: Shows the token and connection examples for MySQL/PostgreSQL
+
+## Example Output
+
+### Mode Selection
+
+```
+? Select operation mode:
+▸ Connect to EC2 instance via SSM
+  Generate RDS IAM auth token
+```
+
+### EC2 SSM Connection
+
+```
+Available EC2 Instances:
+========================================================================================================================
+INDEX   INSTANCE ID          NAME                            STATE       TYPE          PRIVATE IP       PUBLIC IP
+-----   -------------------  ------------------------------  ----------  ------------  ---------------  ---------------
+1       i-0123456789abcdef0  web-server-prod                running     t3.medium     10.0.1.100       54.123.45.67
+2       i-0abcdef123456789   app-server-staging             running     t3.large      10.0.2.50        -
+3       i-0fedcba987654321   database-server                stopped     t3.xlarge     10.0.3.25        -
+========================================================================================================================
+
+? Select an EC2 instance to connect:
+▸ web-server-prod (i-0123456789abcdef0) - running
+  app-server-staging (i-0abcdef123456789) - running
+  database-server (i-0fedcba987654321) - stopped
+
+Starting SSM session to web-server-prod (i-0123456789abcdef0)...
+Connected! Type 'exit' to close the session.
+
+sh-4.2$ 
+```
+
+### RDS IAM Auth Token Generation
+
+```
+Available RDS Instances:
+========================================================================================================================
+INDEX   IDENTIFIER                                ENGINE           STATUS           ENDPOINT                                            PORT
+-----   ----------------------------------------  ---------------  ---------------  --------------------------------------------------  ------
+1       production-mysql-db                       mysql            available        prod-db.abc123xyz.us-east-1.rds.amazonaws.com       3306
+2       staging-postgres-db                       postgres         available        staging-db.xyz789abc.us-east-1.rds.amazonaws.com    5432
+========================================================================================================================
+
+? Select an RDS instance:
+▸ production-mysql-db (mysql) - available
+  staging-postgres-db (postgres) - available
+
+Enter database username: admin
+
+Generating IAM authentication token for:
+  Instance: production-mysql-db
+  Endpoint: prod-db.abc123xyz.us-east-1.rds.amazonaws.com:3306
+  Username: admin
+  Region:   us-east-1
+
+IAM Authentication Token (valid for 15 minutes):
+========================================================================================================================
+prod-db.abc123xyz.us-east-1.rds.amazonaws.com:3306/?Action=connect&DBUser=admin&X-Amz-Algorithm=...
+========================================================================================================================
+
+Connection Examples:
+
+MySQL/MariaDB:
+  mysql -h prod-db.abc123xyz.us-east-1.rds.amazonaws.com -P 3306 -u admin --password='[TOKEN]' --enable-cleartext-plugin --ssl-mode=REQUIRED
+
+Notes:
+  - Token is valid for 15 minutes from generation time
+  - IAM database authentication must be enabled on the RDS instance
+  - The database user must be configured to use IAM authentication
+  - SSL/TLS connection is required
+  - Generated at: 2025-12-23T10:30:00Z
+```
+
+## Troubleshooting
+
+### EC2 SSM Issues
+
+#### "session-manager-plugin not found"
+Install the Session Manager plugin from [AWS Documentation](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html)
+
+#### "failed to start session"
+- Verify the instance has SSM Agent installed and running
+- Check that the instance has the required IAM role with SSM permissions
+- Ensure the instance is in "running" state
+- Verify your IAM user has `ssm:StartSession` permission
+
+#### "No EC2 instances found"
+- Verify you're using the correct AWS profile and region
+- Check your IAM permissions include `ec2:DescribeInstances`
+- Ensure you have EC2 instances in the specified region
+
+### RDS IAM Auth Issues
+
+#### "Failed to generate auth token"
+- Verify your AWS credentials have permission for `rds-db:connect`
+- Check that you have network connectivity to RDS
+- Ensure the region is correctly specified
+
+#### "Connection refused" when using token
+- Verify IAM database authentication is enabled on the RDS instance
+- Check that the database user is created and configured for IAM authentication
+  - MySQL: `CREATE USER admin IDENTIFIED WITH AWSAuthenticationPlugin AS 'RDS';`
+  - PostgreSQL: `CREATE USER admin WITH LOGIN; GRANT rds_iam TO admin;`
+- Ensure you're using SSL/TLS for the connection
+- Verify security groups allow your IP address
+- Check that the token hasn't expired (15-minute validity)
+
+#### "No RDS instances found"
+- Verify you're using the correct AWS profile and region
+- Check your IAM permissions include `rds:DescribeDBInstances`
+- Ensure you have RDS instances in the specified region
+
+## Release Management
+
+### Automated Releases
+
+This project uses GitHub Actions for automated building and releasing. When a pull request is merged to the `main` branch:
+
+1. **Version Bumping**: Automatically increments version based on PR labels (defaults to patch)
+2. **Multi-platform Builds**: Builds binaries for Linux, macOS, and Windows (AMD64 and ARM64)
+3. **GitHub Release**: Creates a new release with all binaries attached
+
+### Version Bumping with PR Labels
+
+Version bumps are determined by labels on the pull request:
+
+- `major` or `breaking` label → Major version bump (1.0.0 → 2.0.0)
+- `minor` or `feature` label → Minor version bump (1.0.0 → 1.1.0)
+- No label or `patch` label → Patch version bump (1.0.0 → 1.0.1)
+
+**Workflow:**
+1. Create a pull request with your changes
+2. Add appropriate label to the PR:
+   - `major` - Breaking changes
+   - `minor` or `feature` - New features
+   - `patch` or no label - Bug fixes (default)
+3. Merge the PR to `main`
+4. GitHub Actions automatically builds and releases
+
+### Continuous Integration
+
+Every pull request automatically runs:
+- **Linting & Formatting**: Code style and formatting checks (`go fmt`, `go vet`, `golangci-lint`)
+- **Tests**: All unit tests with race detection and coverage reports
+- **Build Validation**: Ensures code builds successfully for all supported platforms (Linux, macOS, Windows - AMD64 & ARM64)
+
+Check results are posted as a comment on your PR, making it easy to see the status at a glance.
+
+### Manual Release
+
+To trigger a release manually:
+1. Go to Actions tab in GitHub
+2. Select "Build and Release" workflow
+3. Click "Run workflow"
+
+## Security Notes
+
+### EC2 SSM
+
+- This tool uses AWS SSM Session Manager, which provides secure shell access without opening inbound ports
+- All session activity can be logged to CloudWatch Logs or S3 (configure in Session Manager preferences)
+- No SSH keys are required or used
+- Sessions are encrypted using TLS 1.2+
+
+### RDS IAM Authentication
+
+- IAM authentication tokens are temporary (15-minute validity)
+- Tokens are generated locally using your AWS credentials
+- No database passwords are stored or transmitted
+- SSL/TLS is required for all IAM-authenticated database connections
+- Authentication is based on AWS IAM identity, providing centralized access control
+- All database connections using IAM auth are logged in CloudTrail
 
 ## Dependencies
 
 - [AWS SDK for Go v2](https://github.com/aws/aws-sdk-go-v2)
-- [Charm Huh](https://github.com/charmbracelet/huh) - Interactive forms and prompts
-
-## Troubleshooting
-
-### No instances found
-- Verify instances have SSM agent installed
-- Check IAM instance profile has required SSM permissions
-- Ensure instances are in the specified region
-- Confirm instances show as "Online" in AWS Systems Manager console
-
-### Session Manager Plugin not found
-```bash
-# Verify installation
-which session-manager-plugin
-
-# Install if missing (macOS)
-brew install --cask session-manager-plugin
-```
-
-### Permission denied
-- Check your AWS credentials are configured correctly
-- Verify your IAM user/role has SSM permissions (`ssm:StartSession`, `ssm:DescribeInstanceInformation`)
-- Ensure you have EC2 read permissions for tag retrieval
+- [promptui](https://github.com/manifoldco/promptui) - Interactive CLI prompts
 
 ## License
 
-MIT
+MIT License - see LICENSE file for details
 
 ## Contributing
 
-Issues and pull requests are welcome!
-
+Contributions are welcome! Please feel free to submit a Pull Request.

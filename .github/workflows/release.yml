@@ -1,0 +1,145 @@
+name: Build and Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  bump-version:
+    runs-on: ubuntu-latest
+    # Only run on merged PRs or manual dispatch
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    outputs:
+      new_tag: ${{ steps.bump.outputs.new_tag }}
+      changelog: ${{ steps.bump.outputs.changelog }}
+      bump_type: ${{ steps.determine_bump.outputs.bump_type }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version bump from PR labels
+        id: determine_bump
+        run: |
+          BUMP_TYPE="patch"
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            LABELS="${{ join(github.event.pull_request.labels.*.name, ',') }}"
+            echo "PR Labels: $LABELS"
+            if [[ "$LABELS" == *"major"* ]] || [[ "$LABELS" == *"breaking"* ]]; then
+              BUMP_TYPE="major"
+            elif [[ "$LABELS" == *"minor"* ]] || [[ "$LABELS" == *"feature"* ]]; then
+              BUMP_TYPE="minor"
+            fi
+          fi
+          echo "bump_type=$BUMP_TYPE" >> $GITHUB_OUTPUT
+          echo "Version bump type: $BUMP_TYPE"
+
+      - name: Bump version and push tag
+        id: bump
+        uses: anothrNick/github-tag-action@1.67.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WITH_V: true
+          DEFAULT_BUMP: ${{ steps.determine_bump.outputs.bump_type }}
+          INITIAL_VERSION: 0.1.0
+          RELEASE_BRANCHES: main
+          PRERELEASE: false
+
+  build-and-release:
+    needs: bump-version
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            output: ec2-ssm-connector-linux-amd64
+          - goos: linux
+            goarch: arm64
+            output: ec2-ssm-connector-linux-arm64
+          - goos: darwin
+            goarch: amd64
+            output: ec2-ssm-connector-darwin-amd64
+          - goos: darwin
+            goarch: arm64
+            output: ec2-ssm-connector-darwin-arm64
+          - goos: windows
+            goarch: amd64
+            output: ec2-ssm-connector-windows-amd64.exe
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          go build -ldflags="-s -w -X 'main.Version=${{ needs.bump-version.outputs.new_tag }}'" -o ${{ matrix.output }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.output }}
+          path: ${{ matrix.output }}
+
+  create-release:
+    needs: [bump-version, build-and-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./binaries
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ needs.bump-version.outputs.new_tag }}
+          name: Release ${{ needs.bump-version.outputs.new_tag }}
+          body: |
+            ## What's Changed
+            ${{ needs.bump-version.outputs.changelog }}
+
+            ## Installation
+
+            Download the appropriate binary for your platform:
+            - Linux AMD64: `ec2-ssm-connector-linux-amd64`
+            - Linux ARM64: `ec2-ssm-connector-linux-arm64`
+            - macOS AMD64 (Intel): `ec2-ssm-connector-darwin-amd64`
+            - macOS ARM64 (Apple Silicon): `ec2-ssm-connector-darwin-arm64`
+            - Windows AMD64: `ec2-ssm-connector-windows-amd64.exe`
+
+            Make the binary executable (Linux/macOS):
+            ```bash
+            chmod +x ec2-ssm-connector-*
+            ```
+
+            ## Features
+            - ✅ Connect to EC2 instances via AWS SSM
+            - ✅ Generate RDS IAM authentication tokens
+            - ✅ Interactive mode selection
+            - ✅ AWS profile and region support
+          files: |
+            binaries/*/ec2-ssm-connector-*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

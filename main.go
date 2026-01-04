@@ -2,240 +2,514 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"strings"
+	"text/tabwriter"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/feature/rds/auth"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
-	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
-	"github.com/charmbracelet/huh"
+	"github.com/manifoldco/promptui"
 )
 
-// InstanceInfo holds combined data for display
-type InstanceInfo struct {
-	InstanceID   string
+// Version information (set by build flags)
+var Version = "dev"
+
+type Instance struct {
+	ID           string
 	Name         string
-	ComputerName string
-	Platform     string
+	PrivateIP    string
+	PublicIP     string
+	State        string
+	InstanceType string
+}
+
+type RDSInstance struct {
+	Identifier string
+	Endpoint   string
+	Port       int32
+	Engine     string
+	Status     string
 }
 
 func main() {
-	// 1. Define and parse CLI flags
-	// MODIFIED: Set default region to "ap-southeast-2"
-	region := flag.String("region", "ap-southeast-2", "The AWS region to target (default: 'ap-southeast-2')")
-	profile := flag.String("profile", "default", "The AWS profile to use (default: 'default')")
+	profile := flag.String("profile", "", "AWS profile to use")
+	region := flag.String("region", "", "AWS region (optional, uses default region if not specified)")
+	mode := flag.String("mode", "", "Mode: 'ec2' for SSM connection or 'rds' for IAM auth token")
+	version := flag.Bool("version", false, "Print version information")
 	flag.Parse()
 
-	// MODIFIED: Removed the check for a blank region, as it now has a default.
-
-	// 2. Check if 'session-manager-plugin' is installed
-	if err := checkPluginExists(); err != nil {
-		log.Fatalf("FATAL: %v", err)
+	if *version {
+		fmt.Printf("ec2-ssm-connector version %s\n", Version)
+		return
 	}
 
-	log.Printf("Using profile: %s, region: %s\n", *profile, *region)
 	ctx := context.Background()
 
-	// 3. Load AWS configuration
-	cfg, err := config.LoadDefaultConfig(ctx,
-		config.WithRegion(*region),
-		config.WithSharedConfigProfile(*profile),
-	)
+	// Load AWS configuration
+	var cfg aws.Config
+	var err error
+
+	configOptions := []func(*config.LoadOptions) error{}
+
+	if *profile != "" {
+		configOptions = append(configOptions, config.WithSharedConfigProfile(*profile))
+	}
+
+	if *region != "" {
+		configOptions = append(configOptions, config.WithRegion(*region))
+	}
+
+	cfg, err = config.LoadDefaultConfig(ctx, configOptions...)
 	if err != nil {
 		log.Fatalf("Failed to load AWS config: %v", err)
 	}
 
-	// 4. Get SSM-managed instances
-	ssmInstances, err := getManagedInstances(ctx, cfg)
-	if err != nil {
-		log.Fatalf("Failed to get SSM instances: %v", err)
-	}
-	if len(ssmInstances) == 0 {
-		log.Fatal("No SSM-managed instances found (or none are 'Online').")
-	}
-
-	// 5. Get EC2 Tags for the instances
-	instanceIDs := make([]string, len(ssmInstances))
-	ssmInstanceMap := make(map[string]ssmtypes.InstanceInformation)
-	for i, inst := range ssmInstances {
-		instanceIDs[i] = *inst.InstanceId
-		ssmInstanceMap[*inst.InstanceId] = inst
-	}
-
-	tags, err := getEC2Tags(ctx, cfg, instanceIDs)
-	if err != nil {
-		log.Printf("Warning: Could not fetch EC2 'Name' tags: %v", err)
-		// Continue without tags
-	}
-
-	// 6. Build the list for the selector
-	var displayInstances []InstanceInfo
-	for _, id := range instanceIDs {
-		inst := ssmInstanceMap[id]
-		displayInstances = append(displayInstances, InstanceInfo{
-			InstanceID:   id,
-			Name:         tags[id], // Will be empty string if not found
-			ComputerName: aws.ToString(inst.ComputerName),
-			Platform:     string(inst.PlatformType),
-		})
-	}
-
-	// 7. Show the instance selector
-	selectedInstanceID, err := selectInstance(displayInstances)
-	if err != nil {
-		log.Fatalf("Instance selection failed: %v", err)
-	}
-
-	log.Printf("Starting SSM session for %s...", selectedInstanceID)
-
-	// 8. Start the SSM session
-	if err := startSSMSession(ctx, cfg, selectedInstanceID); err != nil {
-		log.Fatalf("SSM session failed: %v", err)
-	}
-
-	log.Println("SSM session ended.")
-}
-
-// checkPluginExists verifies the 'session-manager-plugin' is in the PATH
-func checkPluginExists() error {
-	_, err := exec.LookPath("session-manager-plugin")
-	if err != nil {
-		return fmt.Errorf("'session-manager-plugin' not found in PATH. Please install it first")
-	}
-	return nil
-}
-
-// getManagedInstances fetches all instances managed by SSM and are "Online"
-func getManagedInstances(ctx context.Context, cfg aws.Config) ([]ssmtypes.InstanceInformation, error) {
-	client := ssm.NewFromConfig(cfg)
-	var allInstances []ssmtypes.InstanceInformation
-
-	paginator := ssm.NewDescribeInstanceInformationPaginator(client, &ssm.DescribeInstanceInformationInput{
-		InstanceInformationFilterList: []ssmtypes.InstanceInformationFilter{
-			{
-				Key:      ssmtypes.InstanceInformationFilterKeyPingStatus,
-				ValueSet: []string{"Online"},
-			},
-		},
-	})
-
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
+	// Determine mode if not specified
+	selectedMode := *mode
+	if selectedMode == "" {
+		selectedMode, err = selectMode()
 		if err != nil {
-			return nil, fmt.Errorf("failed to describe instances: %w", err)
+			log.Fatalf("Failed to select mode: %v", err)
 		}
-		allInstances = append(allInstances, page.InstanceInformationList...)
 	}
-	return allInstances, nil
+
+	switch selectedMode {
+	case "ec2":
+		handleEC2Mode(ctx, cfg)
+	case "rds":
+		handleRDSMode(ctx, cfg)
+	default:
+		log.Fatalf("Invalid mode: %s. Use 'ec2' or 'rds'", selectedMode)
+	}
 }
 
-// getEC2Tags fetches the 'Name' tag for a list of instance IDs
-func getEC2Tags(ctx context.Context, cfg aws.Config, instanceIDs []string) (map[string]string, error) {
-	client := ec2.NewFromConfig(cfg)
-	tags := make(map[string]string)
-
-	paginator := ec2.NewDescribeInstancesPaginator(client, &ec2.DescribeInstancesInput{
-		InstanceIds: instanceIDs,
-	})
-
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to describe instances for tags: %w", err)
-		}
-
-		for _, res := range page.Reservations {
-			for _, inst := range res.Instances {
-				for _, tag := range inst.Tags {
-					if aws.ToString(tag.Key) == "Name" {
-						tags[aws.ToString(inst.InstanceId)] = aws.ToString(tag.Value)
-						break
-					}
-				}
-			}
-		}
-	}
-	return tags, nil
-}
-
-// selectInstance shows an interactive menu to pick an instance
-func selectInstance(instances []InstanceInfo) (string, error) {
-	var options []huh.Option[string]
-	for _, inst := range instances {
-		// Create a formatted label for the option
-		var labelParts []string
-		labelParts = append(labelParts, inst.InstanceID)
-		if inst.Name != "" {
-			labelParts = append(labelParts, fmt.Sprintf("(%s)", inst.Name))
-		}
-		if inst.ComputerName != "" {
-			labelParts = append(labelParts, fmt.Sprintf("- %s", inst.ComputerName))
-		}
-		labelParts = append(labelParts, fmt.Sprintf("[%s]", inst.Platform))
-
-		label := strings.Join(labelParts, " ")
-		options = append(options, huh.NewOption(label, inst.InstanceID))
+func selectMode() (string, error) {
+	modes := []struct {
+		Name        string
+		Description string
+	}{
+		{Name: "ec2", Description: "Connect to EC2 instance via SSM"},
+		{Name: "rds", Description: "Generate RDS IAM auth token"},
 	}
 
-	var selectedInstanceID string
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Select an Instance to Connect").
-				Options(options...).
-				Value(&selectedInstanceID),
-		),
-	)
+	templates := &promptui.SelectTemplates{
+		Label:    "{{ . }}",
+		Active:   "▸ {{ .Description | cyan }}",
+		Inactive: "  {{ .Description }}",
+		Selected: "✔ Selected: {{ .Description | cyan }}",
+	}
 
-	err := form.Run()
+	prompt := promptui.Select{
+		Label:     "Select operation mode",
+		Items:     modes,
+		Templates: templates,
+	}
+
+	index, _, err := prompt.Run()
 	if err != nil {
 		return "", err
 	}
-	return selectedInstanceID, nil
+
+	return modes[index].Name, nil
 }
 
-// startSSMSession starts the session and hands control to the plugin
-func startSSMSession(ctx context.Context, cfg aws.Config, instanceID string) error {
-	client := ssm.NewFromConfig(cfg)
-
-	// 1. Call StartSession to get connection details
-	resp, err := client.StartSession(ctx, &ssm.StartSessionInput{
-		Target: aws.String(instanceID),
-	})
+func handleEC2Mode(ctx context.Context, cfg aws.Config) {
+	// List EC2 instances
+	instances, err := listInstances(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("failed to start SSM session: %w", err)
+		log.Fatalf("Failed to list instances: %v", err)
 	}
 
-	// 2. Marshal the response to JSON for the plugin
-	sessionJSON, err := json.Marshal(resp)
-	if err != nil {
-		return fmt.Errorf("failed to marshal session response: %w", err)
+	if len(instances) == 0 {
+		fmt.Println("No EC2 instances found")
+		return
 	}
 
-	// 3. Prepare the command to execute the plugin
-	cmd := exec.Command("session-manager-plugin",
-		string(sessionJSON),
-		cfg.Region,
+	// Display instances
+	displayInstances(instances)
+
+	// Prompt user to select an instance
+	selectedInstance, err := selectInstance(instances)
+	if err != nil {
+		log.Fatalf("Failed to select instance: %v", err)
+	}
+
+	// Connect via SSM
+	err = connectToInstance(ctx, cfg, selectedInstance)
+	if err != nil {
+		log.Fatalf("Failed to connect to instance: %v", err)
+	}
+}
+
+func handleRDSMode(ctx context.Context, cfg aws.Config) {
+	// List RDS instances
+	rdsInstances, err := listRDSInstances(ctx, cfg)
+	if err != nil {
+		log.Fatalf("Failed to list RDS instances: %v", err)
+	}
+
+	if len(rdsInstances) == 0 {
+		fmt.Println("No RDS instances found")
+		return
+	}
+
+	// Display RDS instances
+	displayRDSInstances(rdsInstances)
+
+	// Prompt user to select an RDS instance
+	selectedRDS, err := selectRDSInstance(rdsInstances)
+	if err != nil {
+		log.Fatalf("Failed to select RDS instance: %v", err)
+	}
+
+	// Prompt for username
+	username, err := promptForUsername()
+	if err != nil {
+		log.Fatalf("Failed to get username: %v", err)
+	}
+
+	// Generate IAM auth token
+	err = generateRDSAuthToken(ctx, cfg, selectedRDS, username)
+	if err != nil {
+		log.Fatalf("Failed to generate auth token: %v", err)
+	}
+}
+
+func listInstances(ctx context.Context, cfg aws.Config) ([]Instance, error) {
+	ec2Client := ec2.NewFromConfig(cfg)
+
+	// Describe all instances
+	result, err := ec2Client.DescribeInstances(ctx, &ec2.DescribeInstancesInput{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to describe instances: %w", err)
+	}
+
+	var instances []Instance
+
+	for _, reservation := range result.Reservations {
+		for _, instance := range reservation.Instances {
+			// Skip terminated instances
+			if instance.State.Name == types.InstanceStateNameTerminated {
+				continue
+			}
+
+			inst := Instance{
+				ID:           aws.ToString(instance.InstanceId),
+				InstanceType: string(instance.InstanceType),
+				State:        string(instance.State.Name),
+			}
+
+			// Get instance name from tags
+			for _, tag := range instance.Tags {
+				if aws.ToString(tag.Key) == "Name" {
+					inst.Name = aws.ToString(tag.Value)
+					break
+				}
+			}
+
+			// Get IP addresses
+			if instance.PrivateIpAddress != nil {
+				inst.PrivateIP = aws.ToString(instance.PrivateIpAddress)
+			}
+			if instance.PublicIpAddress != nil {
+				inst.PublicIP = aws.ToString(instance.PublicIpAddress)
+			}
+
+			instances = append(instances, inst)
+		}
+	}
+
+	return instances, nil
+}
+
+func displayInstances(instances []Instance) {
+	fmt.Println("\nAvailable EC2 Instances:")
+	fmt.Println(strings.Repeat("=", 120))
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "INDEX\tINSTANCE ID\tNAME\tSTATE\tTYPE\tPRIVATE IP\tPUBLIC IP")
+	fmt.Fprintln(w, strings.Repeat("-", 5)+"\t"+strings.Repeat("-", 19)+"\t"+strings.Repeat("-", 30)+"\t"+
+		strings.Repeat("-", 10)+"\t"+strings.Repeat("-", 12)+"\t"+strings.Repeat("-", 15)+"\t"+strings.Repeat("-", 15))
+
+	for i, inst := range instances {
+		name := inst.Name
+		if name == "" {
+			name = "-"
+		}
+		publicIP := inst.PublicIP
+		if publicIP == "" {
+			publicIP = "-"
+		}
+
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			i+1, inst.ID, name, inst.State, inst.InstanceType, inst.PrivateIP, publicIP)
+	}
+	w.Flush()
+	fmt.Println(strings.Repeat("=", 120))
+}
+
+func selectInstance(instances []Instance) (Instance, error) {
+	templates := &promptui.SelectTemplates{
+		Label:    "{{ . }}",
+		Active:   "▸ {{ .Name | cyan }} ({{ .ID | yellow }}) - {{ .State | green }}",
+		Inactive: "  {{ .Name }} ({{ .ID }}) - {{ .State }}",
+		Selected: "✔ Selected: {{ .Name | cyan }} ({{ .ID | yellow }})",
+	}
+
+	prompt := promptui.Select{
+		Label:     "Select an EC2 instance to connect",
+		Items:     instances,
+		Templates: templates,
+		Size:      10,
+	}
+
+	index, _, err := prompt.Run()
+	if err != nil {
+		return Instance{}, err
+	}
+
+	return instances[index], nil
+}
+
+func connectToInstance(ctx context.Context, cfg aws.Config, instance Instance) error {
+	// Check if instance is running
+	if instance.State != string(types.InstanceStateNameRunning) {
+		return fmt.Errorf("instance %s is not in running state (current state: %s)", instance.ID, instance.State)
+	}
+
+	// Check if session-manager-plugin is installed
+	if _, err := exec.LookPath("session-manager-plugin"); err != nil {
+		return fmt.Errorf("session-manager-plugin not found. Please install it from: https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html")
+	}
+
+	ssmClient := ssm.NewFromConfig(cfg)
+
+	// Start SSM session
+	fmt.Printf("\nStarting SSM session to %s (%s)...\n", instance.Name, instance.ID)
+
+	startSessionInput := &ssm.StartSessionInput{
+		Target: aws.String(instance.ID),
+	}
+
+	result, err := ssmClient.StartSession(ctx, startSessionInput)
+	if err != nil {
+		return fmt.Errorf("failed to start session: %w", err)
+	}
+
+	// Build the session-manager-plugin command
+	sessionID := aws.ToString(result.SessionId)
+	streamURL := aws.ToString(result.StreamUrl)
+	tokenValue := aws.ToString(result.TokenValue)
+
+	// Get the region from config
+	region := cfg.Region
+
+	// Prepare the session data JSON
+	sessionData := fmt.Sprintf(`{"SessionId":"%s","StreamUrl":"%s","TokenValue":"%s"}`, sessionID, streamURL, tokenValue)
+
+	// Execute session-manager-plugin
+	cmd := exec.Command(
+		"session-manager-plugin",
+		sessionData,
+		region,
 		"StartSession",
 	)
 
-	// 4. Wire up STDIN, STDOUT, and STDERR to the plugin
-	// This gives the user interactive control over the shell
+	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
 
-	// 5. Run the command. This will block until the user exits the shell.
+	fmt.Println("Connected! Type 'exit' to close the session.")
+
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("session-manager-plugin failed: %w", err)
+		return fmt.Errorf("session-manager-plugin error: %w", err)
 	}
+
+	fmt.Println("\nSession ended.")
+	return nil
+}
+
+// RDS-related functions
+
+func listRDSInstances(ctx context.Context, cfg aws.Config) ([]RDSInstance, error) {
+	rdsClient := rds.NewFromConfig(cfg)
+
+	// Describe all RDS instances
+	result, err := rdsClient.DescribeDBInstances(ctx, &rds.DescribeDBInstancesInput{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to describe RDS instances: %w", err)
+	}
+
+	var instances []RDSInstance
+
+	for _, dbInstance := range result.DBInstances {
+		engine := aws.ToString(dbInstance.Engine)
+
+		// Skip Oracle databases as they don't support IAM authentication
+		if strings.Contains(strings.ToLower(engine), "oracle") {
+			continue
+		}
+
+		inst := RDSInstance{
+			Identifier: aws.ToString(dbInstance.DBInstanceIdentifier),
+			Engine:     engine,
+			Status:     aws.ToString(dbInstance.DBInstanceStatus),
+		}
+
+		if dbInstance.Endpoint != nil {
+			inst.Endpoint = aws.ToString(dbInstance.Endpoint.Address)
+			if dbInstance.Endpoint.Port != nil {
+				inst.Port = *dbInstance.Endpoint.Port
+			}
+		}
+
+		instances = append(instances, inst)
+	}
+
+	return instances, nil
+}
+
+func displayRDSInstances(instances []RDSInstance) {
+	fmt.Println("\nAvailable RDS Instances:")
+	fmt.Println(strings.Repeat("=", 120))
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "INDEX\tIDENTIFIER\tENGINE\tSTATUS\tENDPOINT\tPORT")
+	fmt.Fprintln(w, strings.Repeat("-", 5)+"\t"+strings.Repeat("-", 40)+"\t"+
+		strings.Repeat("-", 15)+"\t"+strings.Repeat("-", 15)+"\t"+strings.Repeat("-", 50)+"\t"+strings.Repeat("-", 6))
+
+	for i, inst := range instances {
+		endpoint := inst.Endpoint
+		if endpoint == "" {
+			endpoint = "-"
+		}
+		port := fmt.Sprintf("%d", inst.Port)
+		if inst.Port == 0 {
+			port = "-"
+		}
+
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%s\n",
+			i+1, inst.Identifier, inst.Engine, inst.Status, endpoint, port)
+	}
+	w.Flush()
+	fmt.Println(strings.Repeat("=", 120))
+}
+
+func selectRDSInstance(instances []RDSInstance) (RDSInstance, error) {
+	templates := &promptui.SelectTemplates{
+		Label:    "{{ . }}",
+		Active:   "▸ {{ .Identifier | cyan }} ({{ .Engine | yellow }}) - {{ .Status | green }}",
+		Inactive: "  {{ .Identifier }} ({{ .Engine }}) - {{ .Status }}",
+		Selected: "✔ Selected: {{ .Identifier | cyan }} ({{ .Engine | yellow }})",
+	}
+
+	prompt := promptui.Select{
+		Label:     "Select an RDS instance",
+		Items:     instances,
+		Templates: templates,
+		Size:      10,
+	}
+
+	index, _, err := prompt.Run()
+	if err != nil {
+		return RDSInstance{}, err
+	}
+
+	return instances[index], nil
+}
+
+func promptForUsername() (string, error) {
+	validate := func(input string) error {
+		if strings.TrimSpace(input) == "" {
+			return fmt.Errorf("username cannot be empty")
+		}
+		return nil
+	}
+
+	prompt := promptui.Prompt{
+		Label:    "Enter database username",
+		Validate: validate,
+	}
+
+	username, err := prompt.Run()
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(username), nil
+}
+
+func generateRDSAuthToken(ctx context.Context, cfg aws.Config, instance RDSInstance, username string) error {
+	if instance.Status != "available" {
+		fmt.Printf("Warning: RDS instance %s is not in 'available' state (current state: %s)\n", instance.Identifier, instance.Status)
+	}
+
+	if instance.Endpoint == "" {
+		return fmt.Errorf("RDS instance %s does not have an endpoint", instance.Identifier)
+	}
+
+	// Build the endpoint address with port
+	endpoint := fmt.Sprintf("%s:%d", instance.Endpoint, instance.Port)
+
+	fmt.Printf("\nGenerating IAM authentication token for:\n")
+	fmt.Printf("  Instance: %s\n", instance.Identifier)
+	fmt.Printf("  Endpoint: %s\n", endpoint)
+	fmt.Printf("  Username: %s\n", username)
+	fmt.Printf("  Region:   %s\n", cfg.Region)
+	fmt.Println()
+
+	// Generate the auth token (valid for 15 minutes)
+	authToken, err := auth.BuildAuthToken(ctx, endpoint, cfg.Region, username, cfg.Credentials)
+	if err != nil {
+		return fmt.Errorf("failed to generate auth token: %w", err)
+	}
+
+	fmt.Println("IAM Authentication Token (valid for 15 minutes):")
+	fmt.Println(strings.Repeat("=", 120))
+	fmt.Println(authToken)
+	fmt.Println(strings.Repeat("=", 120))
+	fmt.Println()
+
+	// Display connection examples
+	fmt.Println("Connection Examples:")
+	fmt.Println()
+
+	// MySQL/MariaDB
+	if strings.Contains(strings.ToLower(instance.Engine), "mysql") || strings.Contains(strings.ToLower(instance.Engine), "mariadb") {
+		fmt.Println("MySQL/MariaDB:")
+		fmt.Printf("  mysql -h %s -P %d -u %s --password='%s' --enable-cleartext-plugin --ssl-mode=REQUIRED\n",
+			instance.Endpoint, instance.Port, username, authToken)
+		fmt.Println()
+	}
+
+	// PostgreSQL
+	if strings.Contains(strings.ToLower(instance.Engine), "postgres") {
+		fmt.Println("PostgreSQL:")
+		fmt.Printf("  psql \"host=%s port=%d dbname=your_database user=%s password=%s sslmode=require\"\n",
+			instance.Endpoint, instance.Port, username, authToken)
+		fmt.Println()
+		fmt.Println("Or using environment variable:")
+		fmt.Printf("  export PGPASSWORD='%s'\n", authToken)
+		fmt.Printf("  psql -h %s -p %d -U %s -d your_database\n", instance.Endpoint, instance.Port, username)
+		fmt.Println()
+	}
+
+	fmt.Println("Notes:")
+	fmt.Println("  - Token is valid for 15 minutes from generation time")
+	fmt.Println("  - IAM database authentication must be enabled on the RDS instance")
+	fmt.Println("  - The database user must be configured to use IAM authentication")
+	fmt.Println("  - SSL/TLS connection is required")
+	fmt.Printf("  - Generated at: %s\n", time.Now().Format(time.RFC3339))
 
 	return nil
 }
