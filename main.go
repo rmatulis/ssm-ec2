@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -39,6 +40,13 @@ type RDSInstance struct {
 	Port       int32
 	Engine     string
 	Status     string
+}
+
+// SessionData represents the data structure for SSM session manager plugin
+type SessionData struct {
+	SessionId  string `json:"SessionId"`
+	StreamUrl  string `json:"StreamUrl"`
+	TokenValue string `json:"TokenValue"`
 }
 
 func main() {
@@ -314,8 +322,18 @@ func connectToInstance(ctx context.Context, cfg aws.Config, instance Instance) e
 	// Get the region from config
 	region := cfg.Region
 
-	// Prepare the session data JSON
-	sessionData := fmt.Sprintf(`{"SessionId":"%s","StreamUrl":"%s","TokenValue":"%s"}`, sessionID, streamURL, tokenValue)
+	// Prepare the session data JSON using proper marshaling
+	sessionDataStruct := SessionData{
+		SessionId:  sessionID,
+		StreamUrl:  streamURL,
+		TokenValue: tokenValue,
+	}
+
+	sessionDataBytes, err := json.Marshal(sessionDataStruct)
+	if err != nil {
+		return fmt.Errorf("failed to marshal session data: %w", err)
+	}
+	sessionData := string(sessionDataBytes)
 
 	// Execute session-manager-plugin
 	cmd := exec.Command(
