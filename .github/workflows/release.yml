@@ -121,24 +121,26 @@ jobs:
             ## Installation
 
             Download the appropriate binary for your platform:
-            - Linux AMD64: `ec2-ssm-connector-linux-amd64`
-            - Linux ARM64: `ec2-ssm-connector-linux-arm64`
-            - macOS AMD64 (Intel): `ec2-ssm-connector-darwin-amd64`
-            - macOS ARM64 (Apple Silicon): `ec2-ssm-connector-darwin-arm64`
-            - Windows AMD64: `ec2-ssm-connector-windows-amd64.exe`
+            - Linux AMD64: `aws-go-tools-linux-amd64`
+            - Linux ARM64: `aws-go-tools-linux-arm64`
+            - macOS AMD64 (Intel): `aws-go-tools-darwin-amd64`
+            - macOS ARM64 (Apple Silicon): `aws-go-tools-darwin-arm64`
+            - Windows AMD64: `aws-go-tools-windows-amd64.exe`
 
             Make the binary executable (Linux/macOS):
             ```bash
-            chmod +x ec2-ssm-connector-*
+            chmod +x aws-go-tools-*
             ```
 
             ## Features
-            - ✅ Connect to EC2 instances via AWS SSM
+            - ✅ Connect to EC2 instances via AWS SSM with configurable shells
             - ✅ Generate RDS IAM authentication tokens
-            - ✅ Interactive mode selection
+            - ✅ Interactive instance selection with searchable interface
             - ✅ AWS profile and region support
+            - ✅ Configurable shell support for Linux and Windows instances
+            - ✅ Modern CLI built with Cobra framework
           files: |
-            binaries/*/ec2-ssm-connector-*
+            binaries/*/aws-go-tools-*
           draft: false
           prerelease: false
         env:
